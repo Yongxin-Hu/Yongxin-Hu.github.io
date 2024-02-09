@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Yongxin-Hu&#39;s Tech Blog</title>
+  
+  
+  <link href="https://yongxin-hu.github.io/atom.xml" rel="self"/>
+  
+  <link href="https://yongxin-hu.github.io/"/>
+  <updated>2024-02-09T11:18:02.005Z</updated>
+  <id>https://yongxin-hu.github.io/</id>
+  
+  <author>
+    <name>Yongxin-Hu</name>
+    
+  </author>
+  
+  <generator uri="https://hexo.io/">Hexo</generator>
+  
+  <entry>
+    <title>Rust异步机制</title>
+    <link href="https://yongxin-hu.github.io/2024/02/09/Rust%E5%BC%82%E6%AD%A5%E6%9C%BA%E5%88%B6/"/>
+    <id>https://yongxin-hu.github.io/2024/02/09/Rust%E5%BC%82%E6%AD%A5%E6%9C%BA%E5%88%B6/</id>
+    <published>2024-02-09T07:22:35.000Z</published>
+    <updated>2024-02-09T11:18:02.005Z</updated>
+    
+    <content type="html"><![CDATA[<h3 id="Future-抽象"><a href="#Future-抽象" class="headerlink" title="Future 抽象"></a>Future 抽象</h3><p>Rust中对异步Task的核心抽象为Future trait，源码如下：</p><figure class="highlight rust"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">pub</span> <span class="keyword">trait</span> <span class="title class_">Future</span> &#123;</span><br><span class="line">    <span class="keyword">type</span> <span class="title class_">Output</span>;</span><br><span class="line">    <span class="keyword">fn</span> <span class="title function_">poll</span>(<span class="keyword">self</span>: Pin&lt;&amp;<span class="keyword">mut</span> <span class="keyword">Self</span>&gt;, cx: &amp;<span class="keyword">mut</span> Context&lt;<span class="symbol">&#x27;_</span>&gt;) <span class="punctuation">-&gt;</span> Poll&lt;<span class="keyword">Self</span>::Output&gt;;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure><p>Future trait描述状态机对外暴露的接口，用户或Runtime通过poll方法推动状态机，返回执行结果，</p><ol><li><p>遇到了阻塞 Pending</p></li><li><p>执行完毕 Ready+返回值</p></li></ol><p>async和await本质上是一个语法糖，我们可以手动实现Future 来实现异步</p><figure class="highlight rust"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">fn</span> <span class="title function_">do_future</span> <span class="punctuation">-&gt;</span> MyFuture &#123; MyFuture &#125;</span><br><span class="line"></span><br><span class="line"><span class="keyword">struct</span> <span class="title class_">MyFuture</span>;</span><br><span class="line"><span class="keyword">impl</span> <span class="title class_">Future</span> <span class="keyword">for</span> <span class="title class_">MyFuture</span> &#123;</span><br><span class="line">    <span class="keyword">type</span> <span class="title class_">Output</span> = <span class="type">i32</span>;</span><br><span class="line">    <span class="keyword">fn</span> <span class="title function_">poll</span>(<span class="keyword">self</span>: Pin&lt;&amp;<span class="keyword">mut</span> <span class="keyword">Self</span>&gt;, _cx: &amp;<span class="keyword">mut</span> Context&lt;<span class="symbol">&#x27;_</span>&gt;) <span class="punctuation">-&gt;</span> Poll&lt;<span class="keyword">Self</span>::Output&gt;&#123;</span><br><span class="line">        Poll::<span class="title function_ invoke__">Ready</span>(<span class="number">1</span>)</span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure><p>我们注意到 poll 方法中有一个 Context，源码如下：</p><figure class="highlight rust"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">pub</span> <span class="keyword">struct</span> <span class="title class_">Context</span>&lt;<span class="symbol">&#x27;a</span>&gt; &#123;</span><br><span class="line">    waker: &amp;<span class="symbol">&#x27;a</span> Waker,</span><br><span class="line">    <span class="comment">// 标记字段</span></span><br><span class="line">    _marker: PhantomData&lt;<span class="title function_ invoke__">fn</span>(&amp;<span class="symbol">&#x27;a</span> ()) <span class="punctuation">-&gt;</span> &amp;<span class="symbol">&#x27;a</span> ()&gt;,</span><br><span class="line">    _marker2: PhantomData&lt;*<span class="title function_ invoke__">mut</span> ()&gt;,</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure><p>Context中的 waker 就是用于唤醒 Task，他是由 Runtime 构造并且由 Runtime 调用</p><h3 id="Future状态机运转流程"><a href="#Future状态机运转流程" class="headerlink" title="Future状态机运转流程"></a>Future状态机运转流程</h3><p><img src="/images/rust-async.png" alt="rust-async"></p><p>Rust异步任务的大致流程包括：</p><ol><li>运行时组件内部首先将IO注册到Poller中（后面会讲到Poller）</li><li>之后将任务放入（spawn）运行时的任务队列（Task queue）中</li><li>运行时不停地从任务内部取出任务并且执行</li><li>任务执行poll方法，例如执行 read&#x2F;receive&#x2F;write 系统调用<br>4.1. 如果IO没有准备好（Kernel返回WOUND_BLOCK），那么便会返回Pending<br>4.2. IO准备好了（Kernel返回Ok（fd）），返回Ready &lt; T &gt;</li><li>接着执行Task queue中的其他任务，没有任务那么就进入wait</li><li>进入wait之后Poller会通过系统调用（例如epoll_wait），根据返回的IO找到之前放入的Waker，Waker执行wake方法将先前Pending的任务放回Task queue</li></ol><h3 id="Runtime核心组件"><a href="#Runtime核心组件" class="headerlink" title="Runtime核心组件"></a>Runtime核心组件</h3><p><img src="/images/rust-async-2.png" alt="rust-async-2"></p><p>Runtime的核心组件包括<strong>IO组件</strong>，<strong>Executor</strong>以及<strong>Reactor</strong></p><p><strong>IO组件</strong>主要提供异步接口，将自己的fd注册到Reactor上，并在IO未准备就绪时，将waker放到关联任务中。<strong>Executor</strong>取出并执行任务（poll），并在Task queue空时转向Reactor，Reactor与Kernel打交道，在IO就绪时将关联的任务唤醒（加入Task queue），并将执行权交给Executor。</p>]]></content>
+    
+    
+      
+      
+    <summary type="html">&lt;h3 id=&quot;Future-抽象&quot;&gt;&lt;a href=&quot;#Future-抽象&quot; class=&quot;headerlink&quot; title=&quot;Future 抽象&quot;&gt;&lt;/a&gt;Future 抽象&lt;/h3&gt;&lt;p&gt;Rust中对异步Task的核心抽象为Future trait，源码如下：&lt;/p&gt;
+&lt;</summary>
+      
+    
+    
+    
+    
+  </entry>
+  
+</feed>
